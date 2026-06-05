@@ -1274,6 +1274,19 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 
 		RD::get_singleton()->draw_command_end_label(); //Render Opaque
 
+
+		if (scene_state.used_opaque_stencil == true) {
+			RD::get_singleton()->draw_command_begin_label("Render Opaque Stencil");
+
+			RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_COLOR_STENCIL, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count);
+			render_list_params.framebuffer_format = fb_format;
+			render_list_params.subpass = RD::get_singleton()->draw_list_get_current_pass(); // Should now always be 0.
+
+			_render_list(draw_list, fb_format, &render_list_params, 0, render_list_params.element_count);
+
+			RD::get_singleton()->draw_command_end_label(); //Render Opaque Stencil
+		}
+
 		if (draw_sky || draw_sky_fog_only) {
 			RD::get_singleton()->draw_command_begin_label("Draw Sky");
 
@@ -2385,6 +2398,9 @@ void RenderForwardMobile::_render_list(RenderingDevice::DrawListID p_draw_list, 
 		case PASS_MODE_COLOR: {
 			_render_list_template<PASS_MODE_COLOR>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
 		} break;
+		case PASS_MODE_COLOR_STENCIL: {
+			_render_list_template<PASS_MODE_COLOR_STENCIL>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
+		} break;
 		case PASS_MODE_COLOR_TRANSPARENT: {
 			_render_list_template<PASS_MODE_COLOR_TRANSPARENT>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
 		} break;
@@ -2450,6 +2466,14 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 		if (inst->instance_count == 0) {
 			continue;
 		}
+
+		if ((p_params->pass_mode == PASS_MODE_COLOR) && (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_READS_STENCIL)) {
+			continue;
+		}
+		if ((p_params->pass_mode == PASS_MODE_COLOR_STENCIL) && !(surf->flags & GeometryInstanceSurfaceDataCache::FLAG_READS_STENCIL)) {
+			continue;
+		}
+
 
 		SceneShaderForwardMobile::ShaderSpecialization pipeline_specialization = p_params->base_specialization;
 		pipeline_specialization.multimesh = bool(inst->flags_cache & INSTANCE_DATA_FLAG_MULTIMESH);
@@ -2529,6 +2553,7 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 
 		switch (p_params->pass_mode) {
 			case PASS_MODE_COLOR:
+			case PASS_MODE_COLOR_STENCIL:
 			case PASS_MODE_COLOR_TRANSPARENT: {
 				if (element_info.uses_lightmap) {
 					pipeline_key.version = p_params->view_count > 1 ? SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_COLOR_PASS_MULTIVIEW : SceneShaderForwardMobile::SHADER_VERSION_LIGHTMAP_COLOR_PASS;
@@ -2890,7 +2915,12 @@ void RenderForwardMobile::_geometry_instance_add_surface_with_material(GeometryI
 	}
 
 	if (p_material->shader_data->stencil_enabled) {
+		
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_USES_STENCIL;
+	}
+
+	if (p_material->shader_data->stencil_flags & SceneShaderForwardMobile::ShaderData::STENCIL_FLAG_READ) {
+		flags |= GeometryInstanceSurfaceDataCache::FLAG_READS_STENCIL;
 	}
 
 	if (p_material->shader_data->uses_alpha_pass()) {
@@ -2909,16 +2939,16 @@ void RenderForwardMobile::_geometry_instance_add_surface_with_material(GeometryI
 		flags |= GeometryInstanceSurfaceDataCache::FLAG_USES_PARTICLE_TRAILS;
 	}
 
-	if (p_material->shader_data->stencil_enabled) {
-		if (p_material->shader_data->stencil_flags & SceneShaderForwardMobile::ShaderData::STENCIL_FLAG_READ) {
-			// Stencil materials which read from the stencil buffer must be in the alpha pass.
-			// This is critical to preserve compatibility once we'll have the compositor.
-			if (!(flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) {
-				String shader_path = p_material->shader_data->path.is_empty() ? "" : "(" + p_material->shader_data->path + ")";
-				ERR_PRINT_ED(vformat("Attempting to use a shader %s that reads stencil but is not in the alpha queue. Ensure the material uses alpha blending or has depth_draw disabled or depth_test disabled.", shader_path));
-			}
-		}
-	}
+	// if (p_material->shader_data->stencil_enabled) {
+	// 	if (p_material->shader_data->stencil_flags & SceneShaderForwardMobile::ShaderData::STENCIL_FLAG_READ) {
+	// 		// Stencil materials which read from the stencil buffer must be in the alpha pass.
+	// 		// This is critical to preserve compatibility once we'll have the compositor.
+	// 		if (!(flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) {
+	// 			String shader_path = p_material->shader_data->path.is_empty() ? "" : "(" + p_material->shader_data->path + ")";
+	// 			ERR_PRINT_ED(vformat("Attempting to use a shader %s that reads stencil but is not in the alpha queue. Ensure the material uses alpha blending or has depth_draw disabled or depth_test disabled.", shader_path));
+	// 		}
+	// 	}
+	// }
 
 	SceneShaderForwardMobile::MaterialData *material_shadow = nullptr;
 	void *surface_shadow = nullptr;
